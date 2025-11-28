@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ class MatchFilter(BaseFilter):
 class BgaSpider(Spider):
     name = "bga"
     base_url = "https://en.boardgamearena.com/"
-    start_urls = (base_url,)
+    start_urls = [base_url]
 
     custom_settings = {
         "COOKIES_ENABLED": True,
@@ -118,14 +119,14 @@ class BgaSpider(Spider):
     def parse_request_token(self, response: Response) -> Request | None:
         if not isinstance(response, TextResponse):
             self.logger.warning("Response <%s> is not a TextResponse", response.url)
-            return
+            return None
 
         payload = response.json()
         request_token = self.request_token_path.search(payload)
 
         if not request_token:
             self.logger.error("Request token not found in response <%s>", response.url)
-            return
+            return None
 
         self.request_token = request_token
 
@@ -153,10 +154,14 @@ class BgaSpider(Spider):
             if not isinstance(payload, dict) or "game_list" not in payload:
                 continue
 
-            for game in payload["game_list"]:
+            games = list(payload["game_list"])
+            random.shuffle(games)
+            self.logger.info("Scraping %d games", len(games))
+
+            for game in games:
                 game["type"] = "game"
                 game["scraped_at"] = now
-                yield funcy.project(game, self.game_keys) if self.game_keys else game
+                yield funcy.project(game, self.game_keys) if self.game_keys else game  # type: ignore[arg-type]
 
                 if self.scrape_rankings:
                     yield FormRequest(
@@ -175,13 +180,15 @@ class BgaSpider(Spider):
 
                 if self.scrape_matches:
                     games_played = int(game.get("games_played", 0))
-                    priority = games_played // (2 * self.max_matches_per_page)
+                    priority = (games_played * random.uniform(0.75, 1.25)) / (
+                        2 * self.max_matches_per_page
+                    )
                     yield Request(
                         url=self.build_match_url(response, game["id"]),
                         method="GET",
                         callback=self.parse_matches,
                         meta={"game_id": game["id"]},
-                        priority=priority,
+                        priority=int(priority),
                         headers={"X-Request-Token": self.request_token},
                     )
 
@@ -208,13 +215,14 @@ class BgaSpider(Spider):
             entry["type"] = "ranking"
             entry["scraped_at"] = now
             yield (
-                funcy.project(entry, self.ranking_keys) if self.ranking_keys else entry
+                funcy.project(entry, self.ranking_keys) if self.ranking_keys else entry  # type: ignore[arg-type]
             )
             rank_nos.append(int(entry["rank_no"]))
 
         max_rank_no = max(rank_nos, default=math.inf)
 
         if not self.max_rank_scraped or max_rank_no < self.max_rank_scraped:
+            assert response.request is not None
             yield response.request.replace(
                 formdata={
                     "game": str(game_id),
@@ -229,8 +237,8 @@ class BgaSpider(Spider):
         self,
         response: Response,
         game_id: int,
-        from_time: int = None,
-        from_id: int = None,
+        from_time: int | None = None,
+        from_id: int | None = None,
     ) -> str:
         params = {
             "type": "lastresult",
@@ -278,9 +286,10 @@ class BgaSpider(Spider):
                 match["players"] = None
             last_id = match.get("id")
             last_timestamp = match.get("timestamp")
-            yield funcy.project(match, self.match_keys) if self.match_keys else match
+            yield funcy.project(match, self.match_keys) if self.match_keys else match  # type: ignore[arg-type]
 
         if last_id and last_timestamp:
+            assert response.request is not None
             yield Request(
                 url=self.build_match_url(response, game_id, last_timestamp, last_id),
                 method="GET",

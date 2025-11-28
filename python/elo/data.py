@@ -37,6 +37,7 @@ def merge_games(
         key_col="id",
         latest_col=pl.col("scraped_at").str.to_datetime(time_zone="UTC"),
         sort_fields="id",
+        fieldnames_exclude=["scraped_at"],
     )
 
     merge_files(
@@ -75,51 +76,7 @@ def merge_rankings(
             pl.col("rank_no").cast(pl.Float64),
             "name",
         ],
-    )
-
-    merge_files(
-        merge_config=config,
-        overwrite=overwrite,
-        drop_empty=True,
-        sort_keys=True,
-        progress_bar=progress_bar,
-    )
-
-
-def merge_matches(
-    matches_path: str | Path | list[str] | list[Path],
-    output_path: str | Path,
-    overwrite: bool = False,
-    progress_bar: bool = False,
-) -> None:
-    schema = {
-        "id": pl.String,
-        "timestamp": pl.String,
-        "game_id": pl.Int64,
-        "players": pl.List(
-            pl.Struct(
-                {
-                    "player_id": pl.Int64,
-                    "player_name": pl.String,
-                    "place": pl.Int64,
-                    "score": pl.Float64,
-                }
-            )
-        ),
-        "scraped_at": pl.String,
-    }
-
-    config = MergeConfig(
-        schema=pl.Schema(schema),
-        in_paths=matches_path,
-        out_path=output_path,
-        key_col="id",
-        latest_col=pl.col("scraped_at").str.to_datetime(time_zone="UTC"),
-        sort_fields=[
-            "game_id",
-            "timestamp",
-            "id",
-        ],
+        fieldnames_exclude=["scraped_at"],
     )
 
     merge_files(
@@ -226,22 +183,22 @@ def load_data(
     )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    input_dir = Path("results").resolve()
+    output_dir = Path("csv").resolve()
     merge_games(
-        games_path="results/games-*.jl",
-        output_path="games.jl",
+        games_path=input_dir / "games-*.jl",
+        output_path=output_dir / "games.jl",
         overwrite=True,
         progress_bar=True,
     )
     merge_rankings(
-        rankings_path="results/rankings-*.jl",
-        output_path="rankings.jl",
+        rankings_path=input_dir / "rankings-*.jl",
+        output_path=output_dir / "rankings.jl",
         overwrite=True,
         progress_bar=True,
     )
-    merge_matches(
-        matches_path="results/matches-*.jl",
-        output_path="matches.jl",
-        overwrite=True,
-        progress_bar=True,
-    )
+
+
+if __name__ == "__main__":
+    main()
