@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.17.0
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -20,7 +20,7 @@ import polars as pl
 import seaborn as sns
 from datetime import date, timedelta
 from elo.optimal_k import approximate_optimal_k
-from elo.elo_ratings import calculate_elo_ratings
+from elo.elo_ratings import TwoPlayerElo
 from pathlib import Path
 from matplotlib import pyplot as plt
 from tqdm import tqdm
@@ -33,18 +33,36 @@ seed = 13
 elo_scale = 400
 
 # %%
-plot_dir = (Path(".") / "plots").resolve()
+data_dir = Path("../results/snooker/").resolve()
+arrow_dir = Path("../results/arrow/matches").resolve()
+arrow_dir.mkdir(parents=True, exist_ok=True)
+result_dir = Path("../csv/snooker").resolve()
+result_dir.mkdir(parents=True, exist_ok=True)
+plot_dir = Path("../plots/snooker").resolve()
 plot_dir.mkdir(parents=True, exist_ok=True)
-plot_dir
+data_dir, arrow_dir, result_dir, plot_dir
 
 # %% [markdown]
 # # General EDA
 
+# %% [markdown]
+# ## Events
+
 # %%
 events = (
-    pl.scan_ndjson("results/snooker/events*.jl")
+    pl.scan_ndjson(data_dir / "events*.jl")
+    .select(
+        "ID",
+        "Name",
+        "StartDate",
+        "EndDate",
+        "Season",
+        "Discipline",
+        "Team",
+        "scraped_at",
+    )
     .sort("scraped_at")
-    .drop("scraped_at", "type")
+    .drop("scraped_at")
     .group_by("ID", maintain_order=True)
     .last()
     .with_columns(pl.col(pl.String).replace("", None))
@@ -53,8 +71,20 @@ events = (
     )
     .collect()
 )
+events.shape
+
+# %%
+events.sample(10, seed=seed)
+
+# %%
+events.describe()
+
+# %% [markdown]
+# ## Matches
+
+# %%
 matches = (
-    pl.scan_ndjson("results/snooker/matches*.jl")
+    pl.scan_ndjson(data_dir / "matches*.jl", infer_schema_length=10_000)
     .sort("scraped_at")
     .drop("scraped_at", "type")
     .group_by("ID", maintain_order=True)
@@ -83,29 +113,7 @@ matches = (
     )
     .collect()
 )
-players = (
-    pl.scan_ndjson("results/snooker/players*.jl")
-    .sort("scraped_at")
-    .drop("scraped_at", "type")
-    .group_by("ID", maintain_order=True)
-    .last()
-    .with_columns(pl.col(pl.String).replace("", None))
-    .with_columns(pl.col("Born", "Died").str.to_date(strict=False))
-    .collect()
-)
-events.shape, matches.shape, players.shape
-
-# %% [markdown]
-# ## Events
-
-# %%
-events.sample(10, seed=seed)
-
-# %%
-events.describe()
-
-# %% [markdown]
-# ## Matches
+matches.shape
 
 # %%
 matches.sample(10, seed=seed)
@@ -115,6 +123,19 @@ matches.describe()
 
 # %% [markdown]
 # ## Players
+
+# %%
+players = (
+    pl.scan_ndjson(data_dir / "players*.jl", infer_schema_length=10_000)
+    .sort("scraped_at")
+    .drop("scraped_at", "type")
+    .group_by("ID", maintain_order=True)
+    .last()
+    .with_columns(pl.col(pl.String).replace("", None))
+    .with_columns(pl.col("Born", "Died").str.to_date(strict=False))
+    .collect()
+)
+players.shape
 
 # %%
 players.sample(10, seed=seed)
@@ -171,6 +192,19 @@ data = (
 
 data.shape
 
+# %%
+data.sample(10)
+
+# %%
+data.lazy().select(
+    num_players=2,
+    player_ids=pl.when("Player1Outcome")
+    .then(pl.concat_list("Player1ID", "Player2ID"))
+    .otherwise(pl.concat_list("Player2ID", "Player1ID")),
+    places=[1, 2],
+    payoffs=[1, 0],
+).sink_ipc(arrow_dir / "snooker.arrow")
+
 
 # %%
 def player_info_df(data, player_id_col):
@@ -183,6 +217,13 @@ def player_info_df(data, player_id_col):
             pl.col("Date").max().alias(f"{player_id_col}LastMatchDate"),
         )
     )
+
+
+def df_to_numpy(data):
+    return data.select(
+        winner=pl.when("Player1Outcome").then("Player1ID").otherwise("Player2ID"),
+        loser=pl.when("Player1Outcome").then("Player2ID").otherwise("Player1ID"),
+    ).to_numpy()
 
 
 player_info = (
@@ -206,10 +247,10 @@ player_info = (
 player_info.shape
 
 # %%
+matches_array = df_to_numpy(data)
 elo_k = approximate_optimal_k(
-    player_1_ids=data["Player1ID"],
-    player_2_ids=data["Player2ID"],
-    player_1_outcomes=data["Player1Outcome"],
+    matches=matches_array,
+    two_player_only=True,
     min_elo_k=0,
     max_elo_k=elo_scale / 2,
     elo_scale=elo_scale,
@@ -217,14 +258,9 @@ elo_k = approximate_optimal_k(
 elo_k
 
 # %%
-elo_ratings = calculate_elo_ratings(
-    player_1_ids=data["Player1ID"],
-    player_2_ids=data["Player2ID"],
-    player_1_outcomes=data["Player1Outcome"],
-    elo_k=elo_k,
-    elo_scale=elo_scale,
-    progress_bar=True,
-)
+elo = TwoPlayerElo(elo_k=elo_k, elo_scale=elo_scale)
+elo.update_elo_ratings_batch(matches=matches_array, progress_bar=True)
+elo_ratings = elo.elo_ratings
 len(elo_ratings)
 
 # %%
@@ -258,15 +294,37 @@ elo_df.head(100)
 elo_df.tail(100)
 
 # %%
-elo_df.write_csv("results/snooker/elo_ranking.csv", datetime_format="%+")
+elo_df.write_csv(
+    result_dir / "elo_ranking.csv",
+    datetime_format="%+",
+    float_precision=3,
+)
+
+# %%
+_, ax = plt.subplots()
+sns.kdeplot(
+    data=elo_df["Elo"],
+    clip=(-elo_scale / 2, elo_scale / 2),
+    ax=ax,
+)
+ax.legend([])
+ax.grid(True)
+ax.set_title("Elo ratings distribution of Snooker players")
+ax.set_xlabel(None)
+ax.set_ylabel(None)
+plt.tight_layout()
+plt.savefig(plot_dir / "elo_distribution.png")
+plt.savefig(plot_dir / "elo_distribution.svg")
+plt.show()
 
 
 # %% [markdown]
 # # Elo over time
 
+
 # %%
 def calculate_elo_ratings_by_month(data=data, elo_k=elo_k, elo_scale=elo_scale):
-    curr_elo_ratings = None
+    elo = TwoPlayerElo(elo_k=elo_k, elo_scale=elo_scale)
 
     for (dt,), group in tqdm(
         data.group_by_dynamic(
@@ -277,19 +335,11 @@ def calculate_elo_ratings_by_month(data=data, elo_k=elo_k, elo_scale=elo_scale):
             label="right",
         )
     ):
-        curr_elo_ratings = calculate_elo_ratings(
-            player_1_ids=group["Player1ID"],
-            player_2_ids=group["Player2ID"],
-            player_1_outcomes=group["Player1Outcome"],
-            init_elo_ratings=curr_elo_ratings,
-            elo_k=elo_k,
-            elo_scale=elo_scale,
-            progress_bar=False,
-        )
-
+        matches_array = df_to_numpy(group)
+        elo.update_elo_ratings_batch(matches=matches_array, progress_bar=False)
         df = pl.LazyFrame(
-            data=np.array(list(curr_elo_ratings.values())).reshape(1, -1),
-            schema=list(map(str, curr_elo_ratings.keys())),
+            data=np.array(list(elo.elo_ratings.values())).reshape(1, -1),
+            schema=list(map(str, elo.elo_ratings.keys())),
         )
         yield df.select(pl.lit(dt.date()).alias("Date"), pl.all())
 
@@ -313,7 +363,7 @@ len(player_cols)
 
 # %%
 hist_elo.select("Date", *player_cols).write_csv(
-    "results/snooker/elo_ratings_history.csv",
+    result_dir / "elo_ratings_history.csv",
     float_precision=1,
 )
 
@@ -409,7 +459,7 @@ top_rated_players_compact
 
 # %%
 top_rated_players.write_csv(
-    "results/snooker/elo_top_rated_players.csv",
+    result_dir / "elo_top_rated_players.csv",
     float_precision=1,
 )
 
