@@ -1,6 +1,6 @@
 services:
   bga-spider:
-    image: registry.gitlab.com/recommend.games/blog:python
+    image: registry.gitlab.com/recommend.games/elo:python
     env_file:
       - .env
     build:
@@ -14,7 +14,7 @@ services:
     stop_signal: SIGINT
 
   elo-full:
-    image: registry.gitlab.com/recommend.games/blog:rust
+    image: registry.gitlab.com/recommend.games/elo:rust
     env_file:
       - .env
     build:
