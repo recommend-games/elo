@@ -144,5 +144,6 @@ sitepackages/
 .env
 .jobs/
 results*/
+/csv*
 /target
 /supplemental/
