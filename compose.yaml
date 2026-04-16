@@ -13,6 +13,21 @@ services:
     stop_grace_period: 15m
     stop_signal: SIGINT
 
+  snooker-spider:
+    image: registry.gitlab.com/recommend.games/elo:python
+    env_file:
+      - .env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: python
+    container_name: elo-snooker-spider
+    volumes:
+      - ./results:/app/results
+    command: [".venv/bin/scrapy", "runspider", "python/elo/snooker_spider.py"]
+    stop_grace_period: 15m
+    stop_signal: SIGINT
+
   elo-full:
     image: registry.gitlab.com/recommend.games/elo:rust
     env_file:
