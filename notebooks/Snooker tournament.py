@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -30,7 +30,7 @@ elo_scale = 400
 num_simulations = 10_000_000
 
 # %%
-players = pl.read_csv("../csv/snooker/elo_ranking.csv")
+players = pl.read_csv("../csv/snooker_2026/elo_ranking.csv")
 players.shape
 
 # %%
@@ -38,38 +38,38 @@ players.head(10)
 
 # %%
 draw = [
-    "Kyren Wilson",
-    "Lei Peifan",
-    "Jak Jones",
     "Zhao Xintong",
-    "Neil Robertson",
-    "Chris Wakelin",
-    "Mark Allen",
-    "Fan Zhengyi",
-    "Ronnie O'Sullivan",
-    "Ali Carter",
-    "Zhang Anda",
-    "Pang Junxu",
-    "Si Jiahui",
-    "David Gilbert",
-    "Mark Selby",
-    "Ben Woollaston",
-    "John Higgins",
-    "Joe O'Connor",
-    "Xiao Guodong",
-    "Matthew Selt",
-    "Barry Hawkins",
-    "Hossein Vafaei",
-    "Mark Williams",
-    "Wu Yize",
-    "Luca Brecel",
-    "Ryan Day",
+    "Liam Highfield",
     "Ding Junhui",
-    "Zak Surety",
-    "Shaun Murphy",
-    "Daniel Wells",
-    "Judd Trump",
+    "David Gilbert",
+    "Xiao Guodong",
     "Zhou Yuelong",
+    "Shaun Murphy",
+    "Fan Zhengyi",
+    "John Higgins",
+    "Ali Carter",
+    "Ronnie O'Sullivan",
+    "He Guoqiang",
+    "Chris Wakelin",
+    "Liam Pullen",
+    "Neil Robertson",
+    "Pang Junxu",
+    "Kyren Wilson",
+    "Stan Moody",
+    "Mark Allen",
+    "Zhang Anda",
+    "Barry Hawkins",
+    "Matthew Stevens",
+    "Mark Williams",
+    "Antoni Kowalski",
+    "Mark Selby",
+    "Jak Jones",
+    "Wu Yize",
+    "Lei Peifan",
+    "Si Jiahui",
+    "Hossein Vafaei",
+    "Judd Trump",
+    "Gary Wilson",
 ]
 
 
@@ -132,7 +132,7 @@ for name, count in results.most_common():
     print(f"{prob:6.2%} ({odds:7.2f}): {name}")
 
 # %%
-betting_odds = pl.read_csv("../csv/snooker/wsc_odds.csv")
+betting_odds = pl.read_csv("../csv/snooker_2026/wsc_odds.csv")
 betting_odds.shape
 
 # %%
@@ -162,4 +162,4 @@ full_result.shape
 full_result
 
 # %%
-full_result.write_csv("../csv/snooker/wsc_predictions.csv")
+full_result.write_csv("../csv/snooker_2026/wsc_predictions.csv")
