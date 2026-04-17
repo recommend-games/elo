@@ -8,6 +8,26 @@ from scrapy.http import Response, TextResponse
 from scrapy.utils.misc import arg_to_iter
 
 
+def _env_int(name: str, default: int) -> int:
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return default
+    try:
+        return int(val.strip())
+    except ValueError:
+        return default
+
+
+def _env_int_optional(name: str) -> int | None:
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return None
+    try:
+        return int(val.strip())
+    except ValueError:
+        return None
+
+
 class BaseFilter:
     type_name: str
 
@@ -36,46 +56,44 @@ class SnookerSpider(Spider):
     name = "snooker"
 
     api_url = "https://api.snooker.org/"
-    start_season: int = 1974
-    end_season: int | None = None
-    tours = (
-        "challenge",
-        "ebsa",
-        "ibsf",
-        "main",
-        "other",
-        "q",
-        "seniors",
-        "women",
-        "wsf",
-    )
+    start_season: int = _env_int("SNOOKER_START_SEASON", 1974)
+    end_season: int | None = _env_int_optional("SNOOKER_END_SEASON")
+    tours = os.environ.get(
+        "SNOOKER_TOURS", "challenge,ebsa,ibsf,main,other,q,seniors,women,wsf"
+    ).split(",")
+
+    _download_delay = float(os.environ.get("DOWNLOAD_DELAY", str(60 / 10)))
+    _results_dir = os.environ.get("RESULTS_DIR", "results")
+    _jobdir = os.environ.get("JOBDIR", ".jobs")
+    _concurrent_requests = _env_int("CONCURRENT_REQUESTS_PER_DOMAIN", 4)
+    _feed_batch_count = _env_int("FEED_EXPORT_BATCH_ITEM_COUNT", 10_000)
 
     custom_settings = {
         # Rate limit 10: requests per minute
-        "DOWNLOAD_DELAY": 60 / 10,
-        "CONCURRENT_REQUESTS_PER_DOMAIN": 4,
-        "FEED_EXPORT_BATCH_ITEM_COUNT": 10_000,
+        "DOWNLOAD_DELAY": _download_delay,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": _concurrent_requests,
+        "FEED_EXPORT_BATCH_ITEM_COUNT": _feed_batch_count,
         "FEEDS": {
-            "results/snooker/events-%(time)s-%(batch_id)05d.jl": {
+            f"{_results_dir}/snooker/events-%(time)s-%(batch_id)05d.jl": {
                 "format": "jsonlines",
                 "item_filter": EventFilter,
                 "overwrite": False,
                 "store_empty": False,
             },
-            "results/snooker/matches-%(time)s-%(batch_id)05d.jl": {
+            f"{_results_dir}/snooker/matches-%(time)s-%(batch_id)05d.jl": {
                 "format": "jsonlines",
                 "item_filter": MatchFilter,
                 "overwrite": False,
                 "store_empty": False,
             },
-            "results/snooker/players-%(time)s-%(batch_id)05d.jl": {
+            f"{_results_dir}/snooker/players-%(time)s-%(batch_id)05d.jl": {
                 "format": "jsonlines",
                 "item_filter": PlayerFilter,
                 "overwrite": False,
                 "store_empty": False,
             },
         },
-        "JOBDIR": ".jobs",
+        "JOBDIR": _jobdir,
     }
 
     def __init__(self, *args, **kwargs) -> None:
