@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -36,9 +36,9 @@ elo_scale = 400
 data_dir = Path("../results/snooker/").resolve()
 arrow_dir = Path("../results/arrow/matches").resolve()
 arrow_dir.mkdir(parents=True, exist_ok=True)
-result_dir = Path("../csv/snooker").resolve()
+result_dir = Path("../csv/snooker_2026").resolve()
 result_dir.mkdir(parents=True, exist_ok=True)
-plot_dir = Path("../plots/snooker").resolve()
+plot_dir = Path("../plots/snooker_2026").resolve()
 plot_dir.mkdir(parents=True, exist_ok=True)
 data_dir, arrow_dir, result_dir, plot_dir
 
