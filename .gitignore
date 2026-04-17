@@ -145,5 +145,6 @@ sitepackages/
 .jobs/
 results*/
 /csv*
+/plots*
 /target
 /supplemental/
