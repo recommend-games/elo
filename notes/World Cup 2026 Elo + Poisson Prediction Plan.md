@@ -101,7 +101,7 @@ world_cup_2026/
     test_knockout.py
 ```
 
-Python 3.10+ is sufficient. Use NumPy for all simulation sampling. Use Polars for loading, transforming, and outputting tabular data. Do not use Polars inside the hot simulation loop.
+Python 3.13 (as required by `pyproject.toml`). Use NumPy for all simulation sampling. Use Polars for loading, transforming, and outputting tabular data. Do not use Polars inside the hot simulation loop.
 
 ## 4. Input data files
 
