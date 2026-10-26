@@ -150,6 +150,8 @@ class BgaSpider(Spider):
 
     prioritise_popular_games = _env_bool("PRIORITISE_POPULAR_GAMES", True)
     allow_list_ids: Container[int] | None = _env_allow_list_ids("ALLOW_LIST_IDS")
+    priority_game_ids: Container[int] | None = _env_allow_list_ids("PRIORITY_GAME_IDS")
+    priority_game_boost = _env_int("PRIORITY_GAME_BOOST", 10_000)
 
     ordinal_regex = re.compile(r"(\d+)(st|nd|rd|th)|winner|loser", re.IGNORECASE)
     integer_regex = re.compile(r"(\d+)")
@@ -235,6 +237,8 @@ class BgaSpider(Spider):
                         if self.prioritise_popular_games
                         else 0
                     )
+                    if self.priority_game_ids and game["id"] in self.priority_game_ids:
+                        priority += self.priority_game_boost
                     yield Request(
                         url=self.build_match_url(response, game["id"]),
                         method="GET",
