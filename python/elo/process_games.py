@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from elo.data import merge_games
 from elo.game_stats import games_stats
+from elo.scrape_status import scrape_status
 
 
 def _now() -> str:
@@ -286,6 +287,7 @@ def process_games(
     - Merge game data (all games JL)
     - Process matches JL to arrow
     - Dedupe matches, combine into single file per match (occasionally fails atm)
+    - Summarise scrape status per game (matches, oldest / newest, gaps)
     - For each game:
         - Remove unconnected players and their matches (optional)
         - Determine if two player only game
@@ -325,6 +327,13 @@ def process_games(
     dedupe_matches(
         partitions_dir=partition_dir,
         delete=True,
+    )
+
+    scrape_status(
+        partitions_dir=partition_dir,
+        games_path=csv_dir / "games.jl",
+        output_path=csv_dir / "scrape_status.json",
+        progress_bar=progress_bar,
     )
 
     merge_matches(
