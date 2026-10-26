@@ -55,6 +55,16 @@ def _env_allow_list_ids(name: str) -> frozenset[int] | None:
         return None
 
 
+def _env_float_optional(name: str) -> float | None:
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return None
+    try:
+        return float(val.strip())
+    except ValueError:
+        return None
+
+
 def _parse_timestamp(val: str) -> int:
     """Parse a Unix timestamp or an ISO 8601 date(time), assuming UTC if naive."""
     val = val.strip()
@@ -191,6 +201,9 @@ class BgaSpider(Spider):
     # Start match pagination at a given time instead of the newest match:
     # either one value for all games or `game_id:time` pairs
     default_start_time, start_time_by_game = _env_start_times("MATCHES_START_TIME")
+    # Games without an explicit start time pick a random one within the last
+    # N days, so instances with the same settings cover different matches
+    random_start_max_days = _env_float_optional("MATCHES_RANDOM_START_DAYS")
     # Whether to also scrape from the newest match down to the start time
     scrape_head_matches = _env_bool("SCRAPE_HEAD_MATCHES", True)
     # BGA ignores `from_time` unless `from_id` is set; a huge ID means
@@ -277,7 +290,11 @@ class BgaSpider(Spider):
                     yield from self.match_requests(response, game)
 
     def match_start_time(self, game_id: int) -> int | None:
-        return self.start_time_by_game.get(game_id, self.default_start_time)
+        start_time = self.start_time_by_game.get(game_id, self.default_start_time)
+        if start_time is None and self.random_start_max_days:
+            offset = random.uniform(0, self.random_start_max_days * 86_400)
+            start_time = int(time.time() - offset)
+        return start_time
 
     def match_requests(
         self,
