@@ -55,6 +55,41 @@ def _env_allow_list_ids(name: str) -> frozenset[int] | None:
         return None
 
 
+def _parse_timestamp(val: str) -> int:
+    """Parse a Unix timestamp or an ISO 8601 date(time), assuming UTC if naive."""
+    val = val.strip()
+    if val.isdigit():
+        return int(val)
+    dt = datetime.fromisoformat(val)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _env_start_times(name: str) -> tuple[int | None, dict[int, int]]:
+    """Parse either a single start time for all games or comma-separated
+    `game_id:time` pairs, e.g. `1467:2024-05-01,10:1700000000`."""
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return None, {}
+
+    items = [x.strip() for x in val.split(",") if x.strip()]
+    per_game: dict[int, int] = {}
+    try:
+        for item in items:
+            game_id, sep, start = item.partition(":")
+            if not sep or not game_id.strip().isdigit():
+                break
+            per_game[int(game_id)] = _parse_timestamp(start)
+        else:
+            return None, per_game
+        if len(items) == 1:
+            return _parse_timestamp(items[0]), {}
+    except ValueError:
+        pass
+    raise ValueError(f"Invalid value for {name}: {val!r}")
+
+
 class BaseFilter:
     type_name: str
 
@@ -153,6 +188,15 @@ class BgaSpider(Spider):
     priority_game_ids: Container[int] | None = _env_allow_list_ids("PRIORITY_GAME_IDS")
     priority_game_boost = _env_int("PRIORITY_GAME_BOOST", 10_000)
 
+    # Start match pagination at a given time instead of the newest match:
+    # either one value for all games or `game_id:time` pairs
+    default_start_time, start_time_by_game = _env_start_times("MATCHES_START_TIME")
+    # Whether to also scrape from the newest match down to the start time
+    scrape_head_matches = _env_bool("SCRAPE_HEAD_MATCHES", True)
+    # BGA ignores `from_time` unless `from_id` is set; a huge ID means
+    # "everything before `from_time`"
+    from_id_sentinel = 999_999_999_999
+
     ordinal_regex = re.compile(r"(\d+)(st|nd|rd|th)|winner|loser", re.IGNORECASE)
     integer_regex = re.compile(r"(\d+)")
 
@@ -230,23 +274,60 @@ class BgaSpider(Spider):
                     )
 
                 if self.scrape_matches:
-                    games_played = int(game.get("games_played", 0))
-                    priority = (
-                        (games_played * random.uniform(0.75, 1.25))
-                        / (2 * self.max_matches_per_page)
-                        if self.prioritise_popular_games
-                        else 0
-                    )
-                    if self.priority_game_ids and game["id"] in self.priority_game_ids:
-                        priority += self.priority_game_boost
-                    yield Request(
-                        url=self.build_match_url(response, game["id"]),
-                        method="GET",
-                        callback=self.parse_matches,
-                        meta={"game_id": game["id"]},
-                        priority=int(priority),
-                        headers={"X-Request-Token": self.request_token},
-                    )
+                    yield from self.match_requests(response, game)
+
+    def match_start_time(self, game_id: int) -> int | None:
+        return self.start_time_by_game.get(game_id, self.default_start_time)
+
+    def match_requests(
+        self,
+        response: Response,
+        game: dict[str, Any],
+    ) -> Generator[Request]:
+        game_id = game["id"]
+        games_played = int(game.get("games_played", 0))
+        priority = (
+            (games_played * random.uniform(0.75, 1.25))
+            / (2 * self.max_matches_per_page)
+            if self.prioritise_popular_games
+            else 0
+        )
+        if self.priority_game_ids and game_id in self.priority_game_ids:
+            priority += self.priority_game_boost
+
+        start_time = self.match_start_time(game_id)
+
+        if start_time is not None:
+            self.logger.debug(
+                "Scraping matches for game %d from %s",
+                game_id,
+                datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
+            )
+            # Tail: everything before the start time
+            yield Request(
+                url=self.build_match_url(
+                    response,
+                    game_id,
+                    from_time=start_time,
+                    from_id=self.from_id_sentinel,
+                ),
+                method="GET",
+                callback=self.parse_matches,
+                meta={"game_id": game_id},
+                priority=int(priority),
+                headers={"X-Request-Token": self.request_token},
+            )
+
+        if start_time is None or self.scrape_head_matches:
+            # Head: from the newest match down to the start time (if any)
+            yield Request(
+                url=self.build_match_url(response, game_id),
+                method="GET",
+                callback=self.parse_matches,
+                meta={"game_id": game_id, "until_time": start_time},
+                priority=int(priority),
+                headers={"X-Request-Token": self.request_token},
+            )
 
     def parse_ranking(self, response: Response) -> Generator[dict | Request]:
         if not isinstance(response, TextResponse):
@@ -321,6 +402,7 @@ class BgaSpider(Spider):
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         game_id = response.meta["game_id"]
+        until_time = response.meta.get("until_time")
         payload = response.json()
 
         matches = self.match_path.search(payload)
@@ -333,6 +415,10 @@ class BgaSpider(Spider):
         last_timestamp = None
 
         for match in matches:
+            if until_time is not None and int(match.get("timestamp", 0)) < until_time:
+                # Reached the start of the tail chain, which covers the rest
+                return
+
             match["game_id"] = game_id
             match["type"] = "match"
             match["scraped_at"] = now
@@ -350,7 +436,7 @@ class BgaSpider(Spider):
                 url=self.build_match_url(response, game_id, last_timestamp, last_id),
                 method="GET",
                 callback=self.parse_matches,
-                meta={"game_id": game_id},
+                meta={"game_id": game_id, "until_time": until_time},
                 priority=response.request.priority - 1,
                 headers={"X-Request-Token": self.request_token},
             )
