@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -7,6 +8,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import funcy
@@ -15,7 +17,9 @@ from scrapy import FormRequest, Request, Selector, Spider
 from scrapy.http import Response, TextResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Container, Generator, Iterable
+    from collections.abc import AsyncIterator, Container, Generator, Iterable
+
+    from twisted.python.failure import Failure
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -98,6 +102,43 @@ def _env_start_times(name: str) -> tuple[int | None, dict[int, int]]:
     except ValueError:
         pass
     raise ValueError(f"Invalid value for {name}: {val!r}")
+
+
+def _env_url_optional(name: str) -> str | None:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        return None
+    # Plain paths become file:// URLs, so Scrapy can download them as well
+    return val if "://" in val else Path(val).resolve().as_uri()
+
+
+def _format_timestamp(timestamp: int | None) -> str | None:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GameScrapeStatus:
+    oldest: int
+    newest: int
+    gaps: list[tuple[int, int]]
+
+
+def _parse_game_scrape_status(
+    game: dict[str, Any],
+) -> tuple[int, GameScrapeStatus] | None:
+    try:
+        return int(game["game_id"]), GameScrapeStatus(
+            oldest=_parse_timestamp(game["oldest"]),
+            newest=_parse_timestamp(game["newest"]),
+            gaps=[
+                (_parse_timestamp(gap["start"]), _parse_timestamp(gap["end"]))
+                for gap in game.get("gaps") or ()
+            ],
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
 
 
 class BaseFilter:
@@ -209,9 +250,89 @@ class BgaSpider(Spider):
     # BGA ignores `from_time` unless `from_id` is set; a huge ID means
     # "everything before `from_time`"
     from_id_sentinel = 999_999_999_999
+    # Scrape status summary (path or URL) as written by elo.scrape_status:
+    # games in it continue from their newest and oldest match and fill gaps
+    scrape_status_url = _env_url_optional("SCRAPE_STATUS")
 
     ordinal_regex = re.compile(r"(\d+)(st|nd|rd|th)|winner|loser", re.IGNORECASE)
     integer_regex = re.compile(r"(\d+)")
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.scrape_status: dict[int, GameScrapeStatus] = {}
+
+    async def start(self) -> AsyncIterator[Request]:
+        # Load the scrape status first, so it's in place before any matches
+        # are requested; the actual crawl starts once it's loaded or failed
+        if not self.scrape_status_url:
+            for request in self.crawl_start_requests():
+                yield request
+            return
+
+        yield Request(
+            url=self.scrape_status_url,
+            callback=self.parse_scrape_status,
+            errback=self.scrape_status_failed,
+            dont_filter=True,
+        )
+
+    def crawl_start_requests(self) -> Generator[Request]:
+        for url in self.start_urls:
+            yield Request(url=url, dont_filter=True)
+
+    def parse_scrape_status(self, response: Response) -> Generator[Request]:
+        try:
+            self.scrape_status = self.load_scrape_status(
+                json.loads(response.body),
+                response.url,
+            )
+        except (AttributeError, ValueError) as exc:
+            self.logger.warning(
+                "Invalid scrape status <%s>, ignoring it: %s",
+                response.url,
+                exc,
+            )
+        yield from self.crawl_start_requests()
+
+    def scrape_status_failed(self, failure: Failure) -> Generator[Request]:
+        self.logger.warning(
+            "Unable to load scrape status <%s>, ignoring it: %s",
+            self.scrape_status_url,
+            failure.value,
+        )
+        yield from self.crawl_start_requests()
+
+    def load_scrape_status(
+        self,
+        payload: dict[str, Any],
+        url: str,
+    ) -> dict[int, GameScrapeStatus]:
+        games = payload.get("games") or ()
+        parsed = [_parse_game_scrape_status(game) for game in games]
+        statuses = dict(status for status in parsed if status is not None)
+        num_invalid = len(parsed) - len(statuses)
+
+        if num_invalid:
+            self.logger.warning(
+                "Skipped %d invalid game entries in scrape status <%s>",
+                num_invalid,
+                url,
+            )
+
+        generated_at = str(payload.get("generated_at"))
+        try:
+            age_days = (time.time() - _parse_timestamp(generated_at)) / 86_400
+        except ValueError:
+            age_days = math.nan
+        self.logger.info(
+            "Loaded scrape status for %d games from <%s>, generated at %s (%.1f days ago)",
+            len(statuses),
+            url,
+            generated_at,
+            age_days,
+        )
+
+        return statuses
 
     def parse(self, response: Response) -> Request:
         return FormRequest(
@@ -296,6 +417,42 @@ class BgaSpider(Spider):
             start_time = int(time.time() - offset)
         return start_time
 
+    def match_chains(
+        self,
+        game_id: int,
+    ) -> Generator[tuple[int | None, int | None]]:
+        """Pagination chains as (from_time, until_time) pairs; None means from
+        the newest match or until the oldest match respectively."""
+
+        explicit_start_time = self.start_time_by_game.get(
+            game_id,
+            self.default_start_time,
+        )
+        status = self.scrape_status.get(game_id)
+
+        if explicit_start_time is None and status is not None:
+            # Head: newest matches; gaps: from their end down to their start;
+            # tail: everything before the oldest match. The extra second
+            # makes sure no match on the boundary is missed.
+            if self.scrape_head_matches:
+                yield None, status.newest
+            for start, end in status.gaps:
+                yield end + 1, start
+            yield status.oldest + 1, None
+            return
+
+        start_time = self.match_start_time(game_id)
+
+        if start_time is None:
+            yield None, None
+            return
+
+        # Tail: everything before the start time; head: from the newest match
+        # down to the start time
+        yield start_time, None
+        if self.scrape_head_matches:
+            yield None, start_time
+
     def match_requests(
         self,
         response: Response,
@@ -312,36 +469,23 @@ class BgaSpider(Spider):
         if self.priority_game_ids and game_id in self.priority_game_ids:
             priority += self.priority_game_boost
 
-        start_time = self.match_start_time(game_id)
-
-        if start_time is not None:
+        for from_time, until_time in self.match_chains(game_id):
             self.logger.debug(
-                "Scraping matches for game %d from %s",
+                "Scraping matches for game %d from %s until %s",
                 game_id,
-                datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
+                _format_timestamp(from_time) or "newest",
+                _format_timestamp(until_time) or "oldest",
             )
-            # Tail: everything before the start time
             yield Request(
                 url=self.build_match_url(
                     response,
                     game_id,
-                    from_time=start_time,
-                    from_id=self.from_id_sentinel,
+                    from_time=from_time,
+                    from_id=self.from_id_sentinel if from_time is not None else None,
                 ),
                 method="GET",
                 callback=self.parse_matches,
-                meta={"game_id": game_id},
-                priority=int(priority),
-                headers={"X-Request-Token": self.request_token},
-            )
-
-        if start_time is None or self.scrape_head_matches:
-            # Head: from the newest match down to the start time (if any)
-            yield Request(
-                url=self.build_match_url(response, game_id),
-                method="GET",
-                callback=self.parse_matches,
-                meta={"game_id": game_id, "until_time": start_time},
+                meta={"game_id": game_id, "until_time": until_time},
                 priority=int(priority),
                 headers={"X-Request-Token": self.request_token},
             )
@@ -423,6 +567,10 @@ class BgaSpider(Spider):
         payload = response.json()
 
         matches = self.match_path.search(payload)
+
+        if matches == []:
+            self.logger.info("Reached the oldest match of game %d", game_id)
+            return
 
         if not matches:
             self.logger.error("Matches not found in response <%s>", response.url)
