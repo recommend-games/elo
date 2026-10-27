@@ -436,6 +436,10 @@ class BgaSpider(Spider):
 
         matches = self.match_path.search(payload)
 
+        if matches == []:
+            self.logger.info("Reached the oldest match of game %d", game_id)
+            return
+
         if not matches:
             self.logger.error("Matches not found in response <%s>", response.url)
             return
