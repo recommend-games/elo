@@ -100,6 +100,12 @@ def _env_start_times(name: str) -> tuple[int | None, dict[int, int]]:
     raise ValueError(f"Invalid value for {name}: {val!r}")
 
 
+def _format_timestamp(timestamp: int | None) -> str | None:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
 class BaseFilter:
     type_name: str
 
@@ -296,6 +302,25 @@ class BgaSpider(Spider):
             start_time = int(time.time() - offset)
         return start_time
 
+    def match_chains(
+        self,
+        game_id: int,
+    ) -> Generator[tuple[int | None, int | None]]:
+        """Pagination chains as (from_time, until_time) pairs; None means from
+        the newest match or until the oldest match respectively."""
+
+        start_time = self.match_start_time(game_id)
+
+        if start_time is None:
+            yield None, None
+            return
+
+        # Tail: everything before the start time; head: from the newest match
+        # down to the start time
+        yield start_time, None
+        if self.scrape_head_matches:
+            yield None, start_time
+
     def match_requests(
         self,
         response: Response,
@@ -312,36 +337,23 @@ class BgaSpider(Spider):
         if self.priority_game_ids and game_id in self.priority_game_ids:
             priority += self.priority_game_boost
 
-        start_time = self.match_start_time(game_id)
-
-        if start_time is not None:
+        for from_time, until_time in self.match_chains(game_id):
             self.logger.debug(
-                "Scraping matches for game %d from %s",
+                "Scraping matches for game %d from %s until %s",
                 game_id,
-                datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
+                _format_timestamp(from_time) or "newest",
+                _format_timestamp(until_time) or "oldest",
             )
-            # Tail: everything before the start time
             yield Request(
                 url=self.build_match_url(
                     response,
                     game_id,
-                    from_time=start_time,
-                    from_id=self.from_id_sentinel,
+                    from_time=from_time,
+                    from_id=self.from_id_sentinel if from_time is not None else None,
                 ),
                 method="GET",
                 callback=self.parse_matches,
-                meta={"game_id": game_id},
-                priority=int(priority),
-                headers={"X-Request-Token": self.request_token},
-            )
-
-        if start_time is None or self.scrape_head_matches:
-            # Head: from the newest match down to the start time (if any)
-            yield Request(
-                url=self.build_match_url(response, game_id),
-                method="GET",
-                callback=self.parse_matches,
-                meta={"game_id": game_id, "until_time": start_time},
+                meta={"game_id": game_id, "until_time": until_time},
                 priority=int(priority),
                 headers={"X-Request-Token": self.request_token},
             )
