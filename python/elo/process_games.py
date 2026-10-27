@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from tqdm import tqdm
 
 from elo.data import merge_games
 from elo.game_stats import games_stats
+from elo.scrape_status import scrape_status
 
 
 def _now() -> str:
@@ -275,11 +277,17 @@ def game_skills(
     result.write_csv(csv_dir / "game_skills.csv")
 
 
-def process_games() -> None:
+def process_games(
+    *,
+    input_dir: Path | str,
+    csv_dir: Path | str,
+    progress_bar: bool = False,
+) -> None:
     """
     - Merge game data (all games JL)
     - Process matches JL to arrow
     - Dedupe matches, combine into single file per match (occasionally fails atm)
+    - Summarise scrape status per game (matches, oldest / newest, gaps)
     - For each game:
         - Remove unconnected players and their matches (optional)
         - Determine if two player only game
@@ -296,34 +304,36 @@ def process_games() -> None:
         - Write the results into one CSV file per match
     """
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(processName)s] %(levelname)s: %(message)s",
-    )
-
-    input_dir = Path("results").resolve()
+    input_dir = Path(input_dir).resolve()
     arrow_dir = input_dir / "arrow"
     partition_dir = arrow_dir / "partitions"
     matches_dir = arrow_dir / "matches"
-    csv_dir = Path("csv").resolve()
+    csv_dir = Path(csv_dir).resolve()
 
     merge_games(
         games_path=input_dir / "games-*.jl",
         output_path=csv_dir / "games.jl",
         overwrite=True,
-        progress_bar=True,
+        progress_bar=progress_bar,
     )
 
     matches_jl_to_ipc(
         in_dir=input_dir,
         out_dir=partition_dir,
         delete=True,
-        progress_bar=True,
+        progress_bar=progress_bar,
     )
 
     dedupe_matches(
         partitions_dir=partition_dir,
         delete=True,
+    )
+
+    scrape_status(
+        partitions_dir=partition_dir,
+        games_path=csv_dir / "games.jl",
+        output_path=csv_dir / "scrape_status.json",
+        progress_bar=progress_bar,
     )
 
     merge_matches(
@@ -348,5 +358,43 @@ def process_games() -> None:
     )
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Process scraped games and matches into stats and Elo ratings.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        default="results",
+        help="Directory with the scraped JL files and the Arrow data.",
+    )
+    parser.add_argument(
+        "--csv-dir",
+        type=str,
+        default="csv",
+        help="Directory for the merged games, stats and summaries.",
+    )
+    parser.add_argument(
+        "--progress-bar",
+        "-p",
+        action="store_true",
+        help="Show progress bars.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(processName)s] %(levelname)s: %(message)s",
+    )
+    process_games(
+        input_dir=args.input_dir,
+        csv_dir=args.csv_dir,
+        progress_bar=args.progress_bar,
+    )
+
+
 if __name__ == "__main__":
-    process_games()
+    main()
